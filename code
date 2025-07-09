@@ -1,0 +1,94 @@
+#include <Wire.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <TinyGPSPlus.h>
+#include <HardwareSerial.h>
+#include <WiFi.h>
+#include <Firebase_ESP_Client.h>
+
+// Firebase config
+#define API_KEY "your_firebase_web_api_key"
+#define DATABASE_URL "your_project_id.firebaseio.com"  // without https://
+
+// WiFi credentials
+const char* ssid = "your_wifi_ssid";
+const char* password = "your_wifi_password";
+
+// Firebase and Auth
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+Adafruit_MPU6050 mpu;
+TinyGPSPlus gps;
+HardwareSerial gpsSerial(1);  // Using Serial1 for GPS
+
+// Thresholds
+float accel_threshold = 2.5;  // Adjust as needed
+
+void setup() {
+  Serial.begin(115200);
+  gpsSerial.begin(9600, SERIAL_8N1, 16, 17);  // RX=16, TX=17 for GPS
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\nConnected to WiFi");
+
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+  auth.user.email = "";
+  auth.user.password = "";
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1);
+  }
+  Serial.println("MPU6050 ready");
+}
+
+void loop() {
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  // Read GPS
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+
+  // Calculate vibration magnitude
+  float magnitude = sqrt(a.acceleration.x * a.acceleration.x +
+                         a.acceleration.y * a.acceleration.y +
+                         a.acceleration.z * a.acceleration.z);
+
+  Serial.print("Vibration: ");
+  Serial.println(magnitude);
+
+  if (magnitude > accel_threshold && gps.location.isValid()) {
+    Serial.println("Pothole Detected!");
+
+    float latitude = gps.location.lat();
+    float longitude = gps.location.lng();
+
+    String path = "/potholes/" + String(millis());
+    FirebaseJson json;
+    json.set("lat", latitude);
+    json.set("lng", longitude);
+    json.set("timestamp", millis());
+
+    if (Firebase.RTDB.setJSON(&fbdo, path.c_str(), &json)) {
+      Serial.println("Pothole data sent to Firebase");
+    } else {
+      Serial.println("Firebase error: " + fbdo.errorReason());
+    }
+
+    delay(2000);  // Avoid duplicate entries
+  }
+
+  delay(300);
+}
